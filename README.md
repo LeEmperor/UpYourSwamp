@@ -1,212 +1,363 @@
-# UpYourSwamp: Automated Helping Hands for Soldering and Workshop Assistance
+# UpYourSwamp
 
-UpYourSwamp is an automated “helping hands” system for soldering and general electronics workbenches. The goal is to let a user speak natural requests such as:
+**Automated Helping Hands for Soldering and Workshop Assistance**
+
+UpYourSwamp is an AI-assisted robotic “helping hands” system for soldering and general electronics workbenches. The system allows a user to speak natural language requests such as:
 
 * “Can you hold this for me?”
 * “Can you find me a Raspberry Pi in my workspace?”
-* “What resistor value is this part?”
-* “What’s the pinout/spec for this IC?”
+* “What resistor value is this?”
+* “What are the specs of this IC?”
 
-The system combines:
+The system integrates **audio understanding**, **dual-camera geometric vision**, **AI reasoning**, and **closed-loop robotic actuation** to assist users hands-free during technical work.
 
-* A workspace camera (ESP32-CAM) for visual context
-* A microphone and conversational interface (LiveKit AI)
-* A vision understanding layer (Overshoot AI) that outputs structured results
-* A reasoning/action layer (Google Gemini) that chooses the system response or physical action
-* An embedded controller (IMU + steppers) that moves the helping hands to requested positions
+---
 
-## High-level Architecture
+## System Architecture Overview
 
-### Data flow (end-to-end)
+### End-to-End Pipeline
 
-1. **User speech → LiveKit AI**
-
-   * User speaks a request.
-   * LiveKit handles audio capture and speech-to-text.
-   * The transcribed text becomes the system’s request prompt.
-
-2. **Workspace video → Overshoot AI**
-
-   * ESP32-CAM provides a live view of the workspace.
-   * Video is processed by Overshoot AI using the prompt context (e.g., “find a Raspberry Pi”).
-   * Overshoot returns either free-text or structured JSON describing relevant objects and scene information.
-
-3. **Overshoot JSON → Google Gemini**
-
-   * Gemini receives:
-
-     * The user’s request (intent)
-     * Overshoot’s structured output (grounding)
-     * Any relevant system state (optional)
-   * Gemini decides what to do next:
-
-     * Answer informational questions (possibly with internet lookup)
-     * Or produce an action plan for the helping hands
-
-4. **Gemini action → Embedded controller**
-
-   * For physical tasks, Gemini outputs an action request (target object, target region).
-   * The embedded controller estimates pose/position using IMU and camera-based measurements and moves stepper motors accordingly.
-   * A Kalman filter fuses IMU + camera observations to stabilize motion in the workspace frame.
-
-5. **System response → LiveKit AI (TTS)**
-
-   * For informational tasks or confirmations, LiveKit speaks the response back to the user.
-
-## Repository Layout
-
-* `Camera_Code/`
-
-  * `overshoot_runner/`
-
-    * `run_overshoot_video.mjs`
-      Node script that runs Overshoot AI on a video clip and emits JSON lines.
-    * `process_esp_cam_with_overshoot.py`
-      Python script that captures video from ESP32-CAM, writes a short clip, calls the Node runner, and prints the results.
-    * `package.json`, `package-lock.json`
-      Node dependencies for Overshoot SDK.
-  * `finger_tip_tracking/`
-    OpenCV experiments related to fingertip tracking and setup.
-* `LiveKit_runner/`
-  Placeholder for voice agent integration (planned / WIP).
-* `README.md`
-
-## Current Implementation Status
-
-### Implemented
-
-* ESP32-CAM stream ingestion on laptop (Python/OpenCV)
-* Windowed clip generation (`.mp4`)
-* Overshoot runner (Node) operating on a video file source
-* JSON output emitted by Overshoot runner and collected by Python
-
-### Planned / In progress
-
-* LiveKit AI microphone pipeline (speech-to-text and text-to-speech)
-* Gemini integration (reasoning + tool calls)
-* Actuation pipeline to embedded controller (IMU + stepper control)
-* Sensor fusion (Kalman filter) and workspace calibration
-
-## Requirements (Laptop Dev)
-
-### Python
-
-* Python 3.x
-* Recommended: virtual environment
-
-### Node.js
-
-* Node 18+ recommended
-* npm
-
-## Setup (Laptop)
-
-### 1) Clone the repo
-
-```powershell
-git clone https://github.com/<your-user>/<your-repo>.git
-cd <your-repo>
+```
+User Speech
+   ↓
+LiveKit AI (Speech-to-Text)
+   ↓
+User Intent (Text Prompt)
+   ↓
+Overshoot AI (Vision Grounding)
+   ↓
+Structured Vision JSON
+   ↓
+Geometry & Triangulation
+   ↓
+Workspace Coordinates
+   ↓
+Google Gemini (Planning & Decision)
+   ↓
+Action Output
+   ├── Verbal Response → LiveKit AI (TTS)
+   └── Physical Action → Embedded Controller
 ```
 
-### 2) Install Node dependencies for Overshoot
+Each stage communicates using **explicit, structured JSON**, enabling debugging, logging, and deterministic behavior.
 
-```powershell
-cd Camera_Code\overshoot_runner
-npm install
+---
+
+## Hardware Configuration
+
+### Cameras (Dual ESP32-CAM Setup)
+
+* **Camera A (Top-Down)**
+
+  * Mounted orthogonal to the workspace plane
+  * Primary source for **x–y localization**
+* **Camera B (Angled / Side View)**
+
+  * Mounted with known baseline relative to Camera A
+  * Used for **depth (z) estimation via triangulation**
+
+Both cameras are rigidly mounted and treated as static sensors.
+
+### Actuation Hardware
+
+* Stepper motors controlling helping hands
+* IMU mounted on end-effector
+* Embedded controller (MCU)
+* Emergency stop and motion limits (required)
+
+---
+
+## Workspace Coordinate System
+
+All positions are expressed in a **shared workspace frame**:
+
+* Origin: fixed point on the bench (e.g., fiducial origin)
+* Axes:
+
+  * +X → right
+  * +Y → away from user
+  * +Z → upward from table
+
+All vision outputs, estimated poses, and actuator commands are expressed in this frame.
+
+---
+
+## Camera Calibration
+
+### Intrinsic Calibration (Per Camera)
+
+Performed once using a checkerboard or Charuco board.
+
+Parameters:
+
+* Focal length
+* Principal point
+* Lens distortion
+
+Output:
+
+* Camera matrix `K`
+* Distortion coefficients
+
+### Extrinsic Calibration (Camera → Workspace)
+
+Each camera computes a rigid transform:
+
+```
+T_workspace_camera = [ R | t ]
 ```
 
-### 3) Create and activate Python venv
+This is done by observing a fixed fiducial (AprilTag / Charuco board) rigidly mounted in the workspace.
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -U pip
-pip install opencv-python
+---
+
+## Geometric Triangulation (Core Vision Math)
+
+### Inputs
+
+From Overshoot AI (per camera):
+
+* Object or keypoint pixel coordinates `(u, v)`
+* Camera ID
+* Confidence score
+
+### Projection Model
+
+Each camera obeys:
+
+```
+s [u v 1]^T = K [R | t] [X Y Z 1]^T
 ```
 
-### 4) Set environment variables
+Where:
 
-Do not hardcode API keys into source.
+* `(X, Y, Z)` is the workspace coordinate
+* `K` is intrinsic matrix
+* `[R | t]` is camera extrinsic transform
 
-```powershell
-setx OVERSHOOT_API_KEY "YOUR_OVERSHOOT_KEY"
-setx ESP_CAM_URL "http://192.168.4.1:81/stream"
-setx OVERSHOOT_PROMPT "describe what you see"
-```
+### Triangulation Process
 
-Close and reopen your terminal after `setx`.
+1. Convert pixel coordinates → normalized camera rays
+2. Transform rays into workspace frame
+3. Compute closest point between rays from Camera A and Camera B
+4. Use midpoint of shortest line segment as 3D estimate
+5. Reject or downweight estimates with poor ray intersection geometry
 
-### 5) Run the pipeline
+### Output
 
-From `Camera_Code\overshoot_runner`:
-
-```powershell
-.\.venv\Scripts\activate
-python .\process_esp_cam_with_overshoot.py
-```
-
-Expected behavior:
-
-* Captures a short clip from `ESP_CAM_URL`
-* Calls:
-
-  * `node run_overshoot_video.mjs <clip_path>`
-* Prints JSON results to stdout
-
-## Notes on Overshoot Video Input
-
-Overshoot SDK supports:
-
-* `camera` input in a browser
-* `video file` input in a browser/SDK environment
-
-This repository currently uses a windowed approach:
-
-* ESP32-CAM stream → short clip → Overshoot inference → JSON output
-
-This is not true frame-by-frame “live inference,” but it is sufficient for many workshop assistance tasks.
-
-## Suggested Message Format (for downstream Gemini)
-
-For reliable debugging and tracing, all stages should share a `request_id` and timestamps.
-
-Example payload to Gemini:
+A metric 3D point in workspace coordinates:
 
 ```json
 {
-  "request_id": "uuid-or-counter",
-  "user_text": "can you find me a raspberry pi in my workspace",
-  "overshoot": {
-    "ts": 1730000000,
-    "text": "I see a PCB and a small computer board near the center..."
+  "x": 124.2,
+  "y": 87.5,
+  "z": 18.3,
+  "units": "mm",
+  "confidence": 0.89
+}
+```
+
+---
+
+## Camera Placement Constraints (Critical)
+
+To ensure stable triangulation:
+
+* Cameras must have a **non-zero baseline** (recommended ≥ 10–15 cm)
+* Optical axes must not be parallel
+* Workspace must lie within overlapping fields of view
+* Avoid extremely shallow angles (<10° between rays)
+
+Poor placement results in large depth uncertainty.
+
+---
+
+## Overshoot AI Role (Vision Grounding)
+
+Overshoot AI **does not decide actions**. It only answers:
+
+> “What is visible and relevant given this prompt?”
+
+### Overshoot Output Contract (Per Camera)
+
+```json
+{
+  "camera_id": "top_down",
+  "detections": [
+    {
+      "object": "raspberry_pi",
+      "bbox": [x_min, y_min, x_max, y_max],
+      "confidence": 0.92
+    }
+  ],
+  "timestamp": 1730000000
+}
+```
+
+Bounding boxes or keypoints are converted into pixel coordinates for triangulation.
+
+---
+
+## Geometry Module Contract
+
+### Input (From Overshoot)
+
+```json
+{
+  "request_id": "uuid",
+  "detections": {
+    "top_down": { "bbox": [...] },
+    "side_view": { "bbox": [...] }
   }
 }
 ```
 
+### Output (To Gemini)
+
+```json
+{
+  "request_id": "uuid",
+  "object": "raspberry_pi",
+  "workspace_position": {
+    "x": 124.2,
+    "y": 87.5,
+    "z": 18.3,
+    "units": "mm"
+  }
+}
+```
+
+---
+
+## Google Gemini Role (Planning, Not Geometry)
+
+Gemini **never outputs motor coordinates**.
+
+Gemini responsibilities:
+
+* Interpret user intent
+* Decide response type:
+
+  * Informational
+  * Physical assistance
+* Output **high-level action directives**
+
+### Gemini Action Output Contract
+
+```json
+{
+  "request_id": "uuid",
+  "action": "hold",
+  "target": {
+    "object": "pcb",
+    "reference_point": "center"
+  },
+  "constraints": {
+    "stability": "high",
+    "force": "light"
+  }
+}
+```
+
+---
+
+## End-Effector Pose Estimation
+
+### State Vector (Example)
+
+```
+[x, y, z, vx, vy, vz]
+```
+
+Optional:
+
+* Orientation quaternion
+
+### Sensors
+
+* Vision (absolute position)
+* IMU (orientation, short-term dynamics)
+* Motor commands (prediction)
+
+### Filter
+
+A Kalman filter fuses:
+
+* Kinematic prediction from steppers
+* Vision-based corrections
+* IMU orientation updates
+
+Vision corrects drift; IMU smooths motion.
+
+---
+
+## Controller Interface
+
+### Input (From Planner)
+
+```json
+{
+  "target_pose": {
+    "x": 124.2,
+    "y": 87.5,
+    "z": 18.3
+  },
+  "mode": "hold"
+}
+```
+
+### Output
+
+* Stepper trajectories
+* Velocity and acceleration limits
+* Continuous pose updates
+
+---
+
+## Safety Considerations
+
+* Emergency stop
+* Velocity and acceleration limits
+* Collision avoidance zones
+* Confirmation for risky actions
+* Timeout on ambiguous commands
+
+---
+
+## Repository Structure
+
+```
+UPYOURSWAMP/
+├── Camera_Code/
+│   ├── overshoot_runner/
+│   │   ├── run_overshoot_video.mjs
+│   │   ├── process_esp_cam_with_overshoot.py
+│   │   ├── package.json
+│   │   └── node_modules/
+│   ├── finger_tip_tracking/
+│   └── LiveKit_runner/        (planned)
+└── README.md
+```
+
+---
+
+## Design Philosophy
+
+* **Geometry is deterministic**
+* **LLMs reason, not measure**
+* **All inter-module communication is structured**
+* **Perception, planning, and control are isolated**
+* **Human safety overrides autonomy**
+
+---
+
 ## Roadmap
 
-* Integrate LiveKit: audio capture, STT, and TTS responses
-* Add Gemini action planner:
+* LiveKit audio integration
+* AprilTag workspace calibration
+* End-effector visual marker
+* Closed-loop holding control
+* Multi-tool attachments
+* Real-time clip window reduction
 
-  * structured action JSON
-  * tool calls for “look up specs”
-* Add workspace calibration:
-
-  * reference frame markers (AprilTag recommended)
-* Add actuator stack:
-
-  * IMU + steppers
-  * Kalman filter for stable positioning
-* Add logging + request tracing:
-
-  * consistent request IDs across modules
-  * persistent logs for replay
-
-## Safety Notes
-
-This system is intended for controlled bench-top environments. Actuation should include:
-
-* speed limits
-* emergency stop
-* collision/obstacle detection
-* confirmation prompts for risky actions
+---
