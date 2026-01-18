@@ -1,0 +1,319 @@
+# EDITH Build - Technical Outline
+
+## Project Overview
+**EDITH** is a wireless/USB camera streaming system built on the SEEED Studio XIAO ESP32S3 Sense board with an OV2640 camera module. It supports dual streaming modes: WiFi (MJPEG over HTTP) and USB Serial.
+
+---
+
+## Hardware Specifications
+
+| Component | Details |
+|-----------|---------|
+| **Microcontroller** | ESP32-S3 (Xtensa LX7 dual-core, 240MHz) |
+| **Board** | SEEED Studio XIAO ESP32S3 Sense |
+| **Camera Sensor** | OV2640 (2MP, max 1600x1200) |
+| **RAM** | 512KB SRAM + 8MB PSRAM |
+| **Flash** | 8MB |
+| **WiFi** | 802.11 b/g/n (2.4GHz only) |
+| **USB** | USB-C (native USB on ESP32-S3) |
+
+---
+
+## Communication Protocols
+
+### 1. WiFi Streaming (MJPEG over HTTP)
+
+**Protocol Stack:**
+```
+┌─────────────────────────────────┐
+│  MJPEG (Motion JPEG)            │  Application Layer
+├─────────────────────────────────┤
+│  HTTP/1.1 multipart/x-mixed-    │  Application Layer
+│  replace                        │
+├─────────────────────────────────┤
+│  TCP (Port 80)                  │  Transport Layer
+├─────────────────────────────────┤
+│  IP                             │  Network Layer
+├─────────────────────────────────┤
+│  WiFi 802.11 b/g/n              │  Link Layer
+└─────────────────────────────────┘
+```
+
+**MJPEG Stream Format:**
+```http
+HTTP/1.1 200 OK
+Content-Type: multipart/x-mixed-replace; boundary=frame
+
+--frame
+Content-Type: image/jpeg
+Content-Length: <size>
+
+<JPEG binary data>
+
+--frame
+Content-Type: image/jpeg
+Content-Length: <size>
+
+<JPEG binary data>
+...
+```
+
+**HTTP Endpoints:**
+
+| Endpoint | Method | Content-Type | Description |
+|----------|--------|--------------|-------------|
+| `/` | GET | text/html | Web interface |
+| `/stream` | GET | multipart/x-mixed-replace | Live MJPEG stream |
+| `/capture` | GET | image/jpeg | Single frame capture |
+| `/resolution?val=X` | GET | text/plain | Set resolution (QVGA/VGA/SVGA/XGA) |
+| `/quality?val=N` | GET | text/plain | Set JPEG quality (10-25) |
+
+---
+
+### 2. USB Serial Streaming
+
+**Protocol Stack:**
+```
+┌─────────────────────────────────┐
+│  Custom Frame Protocol          │  Application Layer
+│  (FRAME:<size>\n<data>END\n)    │
+├─────────────────────────────────┤
+│  UART Serial                    │  Transport Layer
+│  921600 baud, 8N1               │
+├─────────────────────────────────┤
+│  USB CDC (Virtual COM Port)     │  Link Layer
+└─────────────────────────────────┘
+```
+
+**Frame Protocol Format:**
+```
+FRAME:<size_in_bytes>\n
+<raw JPEG binary data>
+END\n
+```
+
+**Example:**
+```
+FRAME:15234
+<15234 bytes of JPEG data>
+END
+```
+
+**Serial Configuration:**
+- Baud Rate: 921600
+- Data Bits: 8
+- Stop Bits: 1
+- Parity: None
+- Flow Control: None
+
+---
+
+## Camera Configuration
+
+### Pin Mapping (XIAO ESP32S3 Sense)
+
+| Function | GPIO | Description |
+|----------|------|-------------|
+| XCLK | 10 | Camera clock input |
+| PCLK | 13 | Pixel clock |
+| VSYNC | 38 | Vertical sync |
+| HREF | 47 | Horizontal reference |
+| SDA | 40 | I2C data (SCCB) |
+| SCL | 39 | I2C clock (SCCB) |
+| D0-D7 | 15,17,18,16,14,12,11,48 | 8-bit parallel data |
+
+### Supported Resolutions
+
+| Name | Resolution | Pixels | Typical JPEG Size |
+|------|------------|--------|-------------------|
+| QVGA | 320×240 | 76,800 | 5-10 KB |
+| VGA | 640×480 | 307,200 | 12-25 KB |
+| SVGA | 800×600 | 480,000 | 20-35 KB |
+| XGA | 1024×768 | 786,432 | 35-60 KB |
+
+### Image Format
+- **Pixel Format:** JPEG (hardware-compressed by OV2640)
+- **Quality Range:** 10 (best) to 63 (worst), default 15
+- **Frame Buffers:** 2 (double buffering)
+- **Buffer Location:** PSRAM
+
+---
+
+## Software Architecture
+
+### ESP32 Firmware (main.cpp)
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                        main.cpp                            │
+├────────────────────────────────────────────────────────────┤
+│  setup()                                                   │
+│  ├── Serial.begin(921600)                                  │
+│  ├── initCamera()                                          │
+│  ├── WiFi.begin()                                          │
+│  └── server.begin()                                        │
+├────────────────────────────────────────────────────────────┤
+│  loop()                                                    │
+│  ├── server.handleClient()    ← WiFi HTTP requests         │
+│  └── sendFrameSerial()        ← USB serial frames          │
+├────────────────────────────────────────────────────────────┤
+│  HTTP Handlers                                             │
+│  ├── handleRoot()        → Serves HTML interface           │
+│  ├── handleStream()      → MJPEG stream (blocking)         │
+│  ├── handleCapture()     → Single JPEG                     │
+│  ├── handleResolution()  → Change frame size               │
+│  └── handleQuality()     → Change JPEG quality             │
+├────────────────────────────────────────────────────────────┤
+│  Serial Streaming                                          │
+│  └── sendFrameSerial()   → Sends FRAME:/END protocol       │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Python Viewers
+
+**wifi_viewer.py** - WiFi MJPEG client
+- Uses `urllib` to connect to `/stream` endpoint
+- Parses MJPEG multipart boundaries
+- Decodes JPEG with OpenCV
+
+**serial_viewer.py** - USB Serial client
+- Uses `pyserial` for COM port access
+- Parses FRAME:/END protocol
+- Decodes JPEG with OpenCV
+
+---
+
+## Performance Characteristics
+
+| Metric | WiFi | USB Serial |
+|--------|------|------------|
+| Frame Rate | ~30 fps | ~10-15 fps |
+| Latency | 100-200ms | 50-100ms |
+| Bandwidth | ~500 KB/s | ~90 KB/s (921600 baud limit) |
+| Best Resolution | VGA (640×480) | QVGA (320×240) |
+| Multi-client | Yes | No (single COM port) |
+| Range | WiFi range | USB cable length |
+
+---
+
+## Dependencies
+
+### ESP32 Firmware
+- **Platform:** espressif32
+- **Framework:** Arduino
+- **Libraries:**
+  - `esp32-camera` (camera driver)
+  - `WiFi.h` (built-in)
+  - `WebServer.h` (built-in)
+
+### Python Viewers
+- `opencv-python` (cv2)
+- `numpy`
+- `pyserial` (serial_viewer only)
+
+---
+
+## File Structure
+
+```
+EDITH_Build/
+├── src/
+│   └── main.cpp              # ESP32 firmware
+├── include/                  # Header files (unused)
+├── lib/                      # Libraries (unused)
+├── test/                     # Tests (unused)
+├── platformio.ini            # Build configuration
+├── wifi_viewer.py            # WiFi MJPEG viewer
+├── serial_viewer.py          # USB serial viewer
+├── README.md                 # User documentation
+├── TECHNICAL_OUTLINE.md      # This file
+└── esp32-s3_datasheet.pdf    # Hardware reference
+```
+
+---
+
+## Building & Flashing
+
+### Requirements
+- VS Code with PlatformIO extension
+- USB-C cable
+
+### Build Commands (PlatformIO)
+```bash
+# Build
+pio run
+
+# Upload
+pio run --target upload
+
+# Monitor (921600 baud)
+pio device monitor
+```
+
+---
+
+## Extending the System
+
+### Adding New HTTP Endpoints
+1. Create handler function: `void handleXxx() { ... }`
+2. Register in setup(): `server.on("/xxx", handleXxx);`
+
+### Adding Serial Commands
+Modify `loop()` to check `Serial.available()` and parse incoming commands.
+
+### Changing Camera Settings
+Use `sensor_t *s = esp_camera_sensor_get();` then call:
+- `s->set_framesize(s, FRAMESIZE_XXX)`
+- `s->set_quality(s, value)`
+- `s->set_brightness(s, value)` (-2 to 2)
+- `s->set_contrast(s, value)` (-2 to 2)
+- `s->set_saturation(s, value)` (-2 to 2)
+
+### Processing Frames (Python side)
+```python
+# In wifi_viewer.py or serial_viewer.py, after decoding:
+frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+# Add your processing here:
+gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+edges = cv2.Canny(gray, 50, 150)
+# ... object detection, tracking, etc.
+```
+
+---
+
+## Network Configuration
+
+**Current WiFi Settings (in main.cpp):**
+```cpp
+const char* ssid = "Ruben's A25";
+const char* password = "hlui652(";
+```
+
+**Important:** ESP32-S3 only supports 2.4GHz WiFi. 5GHz networks will not work.
+
+---
+
+## Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| Camera init failed | Ribbon cable loose | Reseat cable, check latch |
+| WiFi won't connect | Wrong credentials or 5GHz | Check SSID/password, use 2.4GHz |
+| Serial port busy | Monitor open | Close PlatformIO Serial Monitor |
+| Low frame rate | High resolution | Reduce to QVGA for serial |
+| Gray/black video | Camera not working | Check ribbon cable connection |
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| Mark 1 | - | USB serial only, QVGA, ~10fps |
+| Mark 2 | Jan 2026 | WiFi MJPEG, VGA, ~30fps, dual-mode streaming |
+
+---
+
+*Document created: January 2026*
+*Project: EDITH Build - CMU/UF*
