@@ -1,5 +1,4 @@
-@'
-{
+﻿{
   "name": "overshoot-runner",
   "private": true,
   "type": "module",
@@ -7,4 +6,3 @@
     "@overshoot/sdk": "latest"
   }
 }
-'@ | Set-Content -Encoding UTF8 package.json
