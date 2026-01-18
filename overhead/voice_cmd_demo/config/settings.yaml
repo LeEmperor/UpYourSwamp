@@ -1,0 +1,28 @@
+# Voice Command Demo Configuration
+# This file contains default settings that can be overridden by CLI args or environment variables
+
+audio:
+  sample_rate: 16000  # 16kHz for VAD and Whisper
+  channels: 1  # Mono
+  dtype: int16
+
+vad:
+  silence_threshold_ms: 900  # How long of silence to consider end of speech
+  min_segment_ms: 300  # Ignore segments shorter than this
+  max_utterance_s: 10  # Cap utterance length
+
+whisper:
+  model_size: base  # base, small, medium, large
+  device: cpu  # cpu or cuda
+  compute_type: int8  # float16, int8, etc.
+
+wake_word:
+  default_word: "ai"  # Default wake word
+  case_sensitive: false
+
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+events:
+  log_file: "events.log"  # NDJSON event log file
